@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Template for VPC
+Parameters:
+  #????
+  Env:
+    Type: String
+    Default: test
+    AllowedValues: ["test","prod"]
+Conditions:
+    IsProd: !Equals [!Ref Env , "prod"]
+    
+Resources:
+  CFnVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !If [IsProd,10.12.0.0/16,10.24.0.0/16]
+      InstanceTenancy: default
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          #Env???????
+          Value: !Sub cfn-${Env}
+        ## secret managerの値をタグに追加する
+        #- Key: "Secret"
+        #  Value: '{{resolve:secretsmanager:arn:aws:secretsmanager:ap-northeast-1:{account-id}:secret:test_secret_keys-3WPOtW:SecretString:test_api_key}}'
+          
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: 10.12.0.0/24
+      #環境ごとに分ける場合
+      ##!If [IsProd,10.12.0.0/24,10.24.0.0/24]
+      VpcId: !Ref CFnVPC
+      AvailabilityZone: !Select [ 0, !GetAZs ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: PublicSubnet1
+  #internet-gateway
+  CFnVPCIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties: 
+      Tags:
+        - Key: Name
+          Value: cfn-test
+
+  CFnVPCIGWAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: 
+      InternetGatewayId: !Ref CFnVPCIGW
+      VpcId: !Ref CFnVPC
+      
+####################################
+##################################
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CFnVPC
+      Tags:
+        - Key: Name
+          Value: Public Route
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: CFnVPCIGW
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref CFnVPCIGW
+
+  PublicSubnet1Association:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+  ElasticIP:
+    Type: "AWS::EC2::EIP"
+    Properties:
+      Domain: vpc
+  #####security-group?IP??
+  SSHSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      #VPC????????????????
+      VpcId: !Ref CFnVPC
+      GroupDescription: "SFTP SSHSG"
+      GroupName: "SFTP_SSHSG"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+            #anywhere
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: "Name"
+          Value: "SFTP SG  what is a  changeset?"
+        - Key: "Secret"
+          Value: '{{resolve:secretsmanager:arn:aws:secretsmanager:ap-northeast-1:905418223580:secret:test_secret_keys-3WPOtW:SecretString:test_api_key}}'
+      #
+  #FTPServer:
+   # Type: AWS::Transfer::Server
+  #  Properties:
+  #    EndpointDetails:
+   #     AddressAllocationIds:
+  #       - !Ref ElasticIP
+    #    SecurityGroupIds:
+    #      - !Ref SSHSecurityGroup
+    #    SubnetIds:
+    #      - !Ref PublicSubnet1
+    #    VpcId: !Ref CFnVPC
+     # EndpointType: VPC 
+    #  Protocols:
+     #   - SFTP
+    #  Tags:
+     #   - Key: Name
+    #      Value: "test-sft-server"
+  
+
+      
+
+
+#####
+#cloudformation command
+#
+#aws cloudformation delete-stack --stack-name test
+#######
