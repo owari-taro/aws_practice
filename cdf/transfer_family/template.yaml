@@ -1,26 +1,44 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: Template for VPC
 Parameters:
-  #????
-  Env:
+  VpcCidr:
     Type: String
-    Default: test
-    AllowedValues: ["test","prod"]
-Conditions:
-    IsProd: !Equals [!Ref Env , "prod"]
+    Default: 10.12.0.0/16
+  SubnetCidr:
+    Type: String
+    Default: 10.12.0.0/24
+  LogGroupName:
+    Type: String
+    Default: SFTPLog
+  #sgで許可するIP
+  #AllowedIP:
+  #  Type: String
+  #  Default: 0.0.0.0/0
+  #????
+  #Env:
+  #  Type: String
+  ##  Default: test
+   # AllowedValues: ["test","prod"]
+#Conditions:
+#    IsProd: !Equals [!Ref Env , "prod"]
     
 Resources:
+  #######################################
+  #SFTPを置くVPCの設定(VPC/Subnet/IGW/RouteTable/SGなど/)
+  #######################################
   CFnVPC:
     Type: AWS::EC2::VPC
     Properties:
-      CidrBlock: !If [IsProd,10.12.0.0/16,10.24.0.0/16]
+      CidrBlock: !Ref VpcCidr
+      #10.12.0.0/16 #!If [IsProd,10.12.0.0/16,10.24.0.0/16]
       InstanceTenancy: default
       EnableDnsSupport: true
       EnableDnsHostnames: true
       Tags:
         - Key: Name
           #Env???????
-          Value: !Sub cfn-${Env}
+          Value: sftp_vpc
+          #!Sub cfn-${Env}
         ## secret managerの値をタグに追加する
         #- Key: "Secret"
         #  Value: '{{resolve:secretsmanager:arn:aws:secretsmanager:ap-northeast-1:{account-id}:secret:test_secret_keys-3WPOtW:SecretString:test_api_key}}'
@@ -36,14 +54,14 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: PublicSubnet1
+          Value: sftp_pub_sub1
   #internet-gateway
   CFnVPCIGW:
     Type: AWS::EC2::InternetGateway
     Properties: 
       Tags:
         - Key: Name
-          Value: cfn-test
+          Value: sftp_igw
 
   CFnVPCIGWAttach:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -59,7 +77,7 @@ Resources:
       VpcId: !Ref CFnVPC
       Tags:
         - Key: Name
-          Value: Public Route
+          Value: sftp_route_table
 
   PublicRoute:
     Type: AWS::EC2::Route
@@ -78,11 +96,9 @@ Resources:
     Type: "AWS::EC2::EIP"
     Properties:
       Domain: vpc
-  #####security-group?IP??
   SSHSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      #VPC????????????????
       VpcId: !Ref CFnVPC
       GroupDescription: "SFTP SSHSG"
       GroupName: "SFTP_SSHSG"
@@ -90,38 +106,63 @@ Resources:
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
-            #anywhere
+          #allow anywhere 
           CidrIp: 0.0.0.0/0
-      Tags:
-        - Key: "Name"
-          Value: "SFTP SG  what is a  changeset?"
-        - Key: "Secret"
-          Value: '{{resolve:secretsmanager:arn:aws:secretsmanager:ap-northeast-1:905418223580:secret:test_secret_keys-3WPOtW:SecretString:test_api_key}}'
-      #
-  #FTPServer:
-   # Type: AWS::Transfer::Server
-  #  Properties:
-  #    EndpointDetails:
-   #     AddressAllocationIds:
-  #       - !Ref ElasticIP
-    #    SecurityGroupIds:
-    #      - !Ref SSHSecurityGroup
-    #    SubnetIds:
-    #      - !Ref PublicSubnet1
-    #    VpcId: !Ref CFnVPC
-     # EndpointType: VPC 
-    #  Protocols:
-     #   - SFTP
-    #  Tags:
-     #   - Key: Name
-    #      Value: "test-sft-server"
   
+  #####################################
+  #TransferFamily自体の設定
+  #####################################
+  Log:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Ref LogGroupName
 
-      
+    #DataProtectionPolicy: Json
+    #KmsKeyId: String
+      #LogGroupClass: Standard 
+      #RetentionInDays: Integer
+
+
+  SFTPServer:
+    Type: AWS::Transfer::Server
+    Properties:
+      EndpointDetails:
+        AddressAllocationIds:
+          -  !GetAtt ElasticIP.AllocationId
+          #!Ref ElasticIP
+        SecurityGroupIds:
+          - !Ref SSHSecurityGroup
+        SubnetIds:
+          - !Ref PublicSubnet1
+        VpcId: !Ref CFnVPC
+      EndpointType: VPC 
+      Domain: S3     
+      Protocols:
+        - SFTP
+      LoggingRole: !GetAtt TransferLoggingRole.Arn
+      StructuredLogDestinations: [!GetAtt Log.Arn]
+      Tags:
+        - Key: Name
+          Value: "sftp-server"
+  
+    
+  TransferLoggingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument: 
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal: 
+              Service: transfer.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSTransferLoggingAccess    
 
 
 #####
 #cloudformation command
 #
 #aws cloudformation delete-stack --stack-name test
+#
 #######
