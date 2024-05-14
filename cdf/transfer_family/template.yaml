@@ -114,14 +114,14 @@ Resources:
   #####################################
   Log:
     Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
     Properties:
       LogGroupName: !Ref LogGroupName
-
+      
     #DataProtectionPolicy: Json
     #KmsKeyId: String
       #LogGroupClass: Standard 
       #RetentionInDays: Integer
-
 
   SFTPServer:
     Type: AWS::Transfer::Server
