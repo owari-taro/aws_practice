@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: 2010-09-09
-Description: Template for VPC
+Description: Template for sftp in vpc with cloudwatch-alarm and sns notification.
 Parameters:
   VpcCidr:
     Type: String
@@ -10,6 +10,13 @@ Parameters:
   LogGroupName:
     Type: String
     Default: SFTPLog
+  AlarmThreshhold: #この値以上になったらアラート
+    Type: Number
+    Description: threshhold for a cloudwatch aleret
+    Default: 30
+  SNSTopicName:
+    Type: String
+    Default: "too-many-download-notification"
   #sgで許可するIP
   #AllowedIP:
   #  Type: String
@@ -108,21 +115,56 @@ Resources:
           ToPort: 22
           #allow anywhere 
           CidrIp: 0.0.0.0/0
-  
+
+
   #####################################
-  #TransferFamily自体の設定
+  #cloudwatch・sns topic
   #####################################
-  Log:
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Ref SNSTopicName
+      
+  LogGroup:
     Type: AWS::Logs::LogGroup
-    DeletionPolicy: Retain
     Properties:
       LogGroupName: !Ref LogGroupName
-      
+    #    DeletionPolicy: Retain
     #DataProtectionPolicy: Json
     #KmsKeyId: String
       #LogGroupClass: Standard 
       #RetentionInDays: Integer
 
+  MetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      FilterPattern: '{($.mode="READ")}'
+      LogGroupName:
+        !Ref LogGroup
+      MetricTransformations:
+        -
+          MetricValue: "1"
+          MetricNamespace: SFTPMetrics
+          MetricName: "sftp_filter"
+  Alarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: "sftp got too many download requests from clients!!"
+      AlarmName: "sftp-too-many-read-request"
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Threshold: !Ref AlarmThreshhold
+      DatapointsToAlarm: 1
+      EvaluationPeriods: 1
+      MetricName: "sftp_filter"
+      Namespace: SFTPMetrics
+      Period: 180
+      Statistic: Sum
+      AlarmActions:
+        -  !Ref SNSTopic
+     
+#########################################
+#sftp
+#########################################
   SFTPServer:
     Type: AWS::Transfer::Server
     Properties:
@@ -140,12 +182,11 @@ Resources:
       Protocols:
         - SFTP
       LoggingRole: !GetAtt TransferLoggingRole.Arn
-      StructuredLogDestinations: [!GetAtt Log.Arn]
+      StructuredLogDestinations: [!GetAtt LogGroup.Arn]
       Tags:
         - Key: Name
           Value: "sftp-server"
-  
-    
+   
   TransferLoggingRole:
     Type: AWS::IAM::Role
     Properties:
