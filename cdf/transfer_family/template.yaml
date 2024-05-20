@@ -7,16 +7,24 @@ Parameters:
   SubnetCidr:
     Type: String
     Default: 10.12.0.0/24
-  LogGroupName:
+  TransferLogGroupName:
     Type: String
-    Default: SFTPLog
+    Default: TransferSFTPLog
   AlarmThreshhold: #この値以上になったらアラート
     Type: Number
     Description: threshhold for a cloudwatch aleret
     Default: 30
+  AlarmPeriod:
+    Type: Number
+    Description: "assesment period (sec) for an alert"
+    Default: 180
   SNSTopicName:
+    Type: String    
+    Default: "TooManySFTPDownloadNotification"
+  LambdaFuncName:
     Type: String
-    Default: "too-many-download-notification"
+    Description: "lambda function stopping sftp server triggerd by too many download requests"
+    Default: "StopSftpServer"
   #sgで許可するIP
   #AllowedIP:
   #  Type: String
@@ -43,12 +51,12 @@ Resources:
       EnableDnsHostnames: true
       Tags:
         - Key: Name
-          #Env???????
-          Value: sftp_vpc
+          Value: SFTPVPC
+          #
           #!Sub cfn-${Env}
-        ## secret managerの値をタグに追加する
-        #- Key: "Secret"
-        #  Value: '{{resolve:secretsmanager:arn:aws:secretsmanager:ap-northeast-1:{account-id}:secret:test_secret_keys-3WPOtW:SecretString:test_api_key}}'
+          ## secret managerの値をタグに追加する
+          #- Key: "Secret"
+          #  Value: '{{resolve:secretsmanager:arn:aws:secretsmanager:ap-northeast-1:{account-id}:secret:test_secret_keys-3WPOtW:SecretString:test_api_key}}'
           
   PublicSubnet1:
     Type: AWS::EC2::Subnet
@@ -61,14 +69,14 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: sftp_pub_sub1
+          Value: SFTPPubSub
   #internet-gateway
   CFnVPCIGW:
     Type: AWS::EC2::InternetGateway
     Properties: 
       Tags:
         - Key: Name
-          Value: sftp_igw
+          Value: SFTPIGW
 
   CFnVPCIGWAttach:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -103,6 +111,9 @@ Resources:
     Type: "AWS::EC2::EIP"
     Properties:
       Domain: vpc
+      Tags:
+      - Key: Name
+        Value: SFTPIP
   SSHSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -125,10 +136,10 @@ Resources:
     Properties:
       TopicName: !Ref SNSTopicName
       
-  LogGroup:
+  TransferLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Ref LogGroupName
+      LogGroupName: !Ref TransferLogGroupName
     #    DeletionPolicy: Retain
     #DataProtectionPolicy: Json
     #KmsKeyId: String
@@ -140,13 +151,13 @@ Resources:
     Properties:
       FilterPattern: '{($.mode="READ")}'
       LogGroupName:
-        !Ref LogGroup
+        !Ref TransferLogGroup
       MetricTransformations:
         -
           MetricValue: "1"
           MetricNamespace: SFTPMetrics
           MetricName: "sftp_filter"
-  Alarm:
+  CloudWatchAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmDescription: "sftp got too many download requests from clients!!"
@@ -157,15 +168,16 @@ Resources:
       EvaluationPeriods: 1
       MetricName: "sftp_filter"
       Namespace: SFTPMetrics
-      Period: 180
+      Period: !Ref AlarmPeriod
       Statistic: Sum
       AlarmActions:
-        -  !Ref SNSTopic
+        - !Ref SNSTopic
+        - !GetAtt Lambda.Arn
      
 #########################################
-#sftp
+#TransferFamily:SFTP
 #########################################
-  SFTPServer:
+  TransferServer:
     Type: AWS::Transfer::Server
     Properties:
       EndpointDetails:
@@ -182,7 +194,7 @@ Resources:
       Protocols:
         - SFTP
       LoggingRole: !GetAtt TransferLoggingRole.Arn
-      StructuredLogDestinations: [!GetAtt LogGroup.Arn]
+      StructuredLogDestinations: [!GetAtt TransferLogGroup.Arn]
       Tags:
         - Key: Name
           Value: "sftp-server"
@@ -199,6 +211,85 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSTransferLoggingAccess    
+
+######################
+##Lambda Function for stopping sftp server
+########################
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      #defaultのlambdaのログの命名形式
+      LogGroupName: !Sub "/aws/lambda/${LambdaFuncName}"
+      #DeletionPolicy: Retain
+  
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      #RoleName: !Sub ${ResourceName}-lambda-role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action: sts:AssumeRole
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+      Policies: 
+        - PolicyName: StopTransferPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "transfer:StopServer"
+                Resource: !GetAtt TransferServer.Arn
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole 
+
+  Lambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref LambdaFuncName
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Environment:
+        Variables:
+          #TransferFamilyを止めるには関数内でServerIDを参照する必要があるので環境変数で渡す
+          SERVER_ID: !GetAtt TransferServer.ServerId
+      Code:
+         ZipFile: !Sub |
+          import boto3
+          import os
+          import time
+          import datetime
+          import json
+          
+          
+          def lambda_handler(event, context):
+            #stop TransferServere
+            print(event)
+            print(os.environ)
+            import boto3
+          
+            client = boto3.client('transfer')
+            res=client.stop_server(
+              ServerId=os.environ["SERVER_ID"]
+            )
+            print(res)
+
+  LambdaInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !GetAtt Lambda.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: lambda.alarms.cloudwatch.amazonaws.com
+      SourceArn: !GetAtt CloudWatchAlarm.Arn
+      #SourceAccount: !Ref 'AWS::AccountId'
+
+
+
+
+
 
 
 #####
