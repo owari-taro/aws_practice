@@ -25,6 +25,12 @@ Parameters:
     Type: String
     Description: "lambda function stopping sftp server triggerd by too many download requests"
     Default: "StopSftpServer"
+  EIPAllocationID:
+    Type: String
+    Description: "Elastic IP's allocation ID"
+    Default: "eipalloc-05359f5be14be60a1"
+  
+  
   #sgで許可するIP
   #AllowedIP:
   #  Type: String
@@ -107,13 +113,13 @@ Resources:
     Properties:
       SubnetId: !Ref PublicSubnet1
       RouteTableId: !Ref PublicRouteTable
-  ElasticIP:
-    Type: "AWS::EC2::EIP"
-    Properties:
-      Domain: vpc
-      Tags:
-      - Key: Name
-        Value: SFTPIP
+  #ElasticIP:
+  #  Type: "AWS::EC2::EIP"
+  #  Properties:
+  ##    Domain: vpc
+  ##    Tags:
+  #    - Key: Name
+  #      Value: SFTPIP
   SSHSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -182,7 +188,8 @@ Resources:
     Properties:
       EndpointDetails:
         AddressAllocationIds:
-          -  !GetAtt ElasticIP.AllocationId
+          - !Ref EIPAllocationID
+          #-  !GetAtt ElasticIP.AllocationId
           #!Ref ElasticIP
         SecurityGroupIds:
           - !Ref SSHSecurityGroup
