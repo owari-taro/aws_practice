@@ -23,8 +23,8 @@ Parameters:
     Default: "TooManySFTPDownloadNotification"
   LambdaFuncName:
     Type: String
-    Description: "lambda function stopping sftp server triggerd by too many download requests"
-    Default: "StopSftpServer"
+    Description: "a lambda function prevent sftp request,triggered by too many sftp download requests"
+    Default: "AttachDenyAllNAcl"
   EIPAllocationID:
     Type: String
     Description: "Elastic IP's allocation ID"
@@ -113,13 +113,13 @@ Resources:
     Properties:
       SubnetId: !Ref PublicSubnet1
       RouteTableId: !Ref PublicRouteTable
-  #ElasticIP:
-  #  Type: "AWS::EC2::EIP"
-  #  Properties:
-  ##    Domain: vpc
-  ##    Tags:
-  #    - Key: Name
-  #      Value: SFTPIP
+  ElasticIP:
+    Type: "AWS::EC2::EIP"
+    Properties:
+      Domain: vpc
+      Tags:
+      - Key: Name
+        Value: SFTPIP
   SSHSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -132,7 +132,13 @@ Resources:
           ToPort: 22
           #allow anywhere 
           CidrIp: 0.0.0.0/0
-
+  DenyAllNacl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref CFnVPC
+      Tags: 
+        - Key: Name
+          Value: deny-all
 
   #####################################
   #cloudwatch・sns topic
@@ -232,7 +238,7 @@ Resources:
   LambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      #RoleName: !Sub ${ResourceName}-lambda-role
+      RoleName: !Sub ${LambdaFuncName}Role
       AssumeRolePolicyDocument:
         Version: 2012-10-17
         Statement:
@@ -242,15 +248,29 @@ Resources:
               Service:
                 - lambda.amazonaws.com
       Policies: 
-        - PolicyName: StopTransferPolicy
+        #- PolicyName: StopTransferPolicy
+        #  PolicyDocument:
+        #    Version: "2012-10-17"
+        #    Statement:
+        #      - Effect: "Allow"
+        #        Action: "transfer:StopServer"
+        #        Resource: !GetAtt TransferServer.Arn
+        - PolicyName: ChangeNetworkAclPolicy 
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: "Allow"
-                Action: "transfer:StopServer"
-                Resource: !GetAtt TransferServer.Arn
+                Action: "ec2:ReplaceNetworkAclAssociation"
+                Resource: 
+                  - !Sub "arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${PublicSubnet1}"
+                  - !Sub "arn:aws:ec2:*:${AWS::AccountId}:network-acl/*"
+              - Effect: "Allow"
+                Action: "ec2:DescribeNetworkAcls"
+                Resource: "*"
+      
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole 
+  
 
   Lambda:
     Type: AWS::Lambda::Function
@@ -258,11 +278,15 @@ Resources:
       FunctionName: !Ref LambdaFuncName
       Role: !GetAtt LambdaRole.Arn
       Runtime: python3.12
+      ##
+      Timeout: 10
       Handler: index.lambda_handler
       Environment:
         Variables:
           #TransferFamilyを止めるには関数内でServerIDを参照する必要があるので環境変数で渡す
+          SUBNET_ID: !GetAtt PublicSubnet1.SubnetId
           SERVER_ID: !GetAtt TransferServer.ServerId
+          NACL_ID: !GetAtt DenyAllNacl.Id
       Code:
          ZipFile: !Sub |
           import boto3
@@ -271,18 +295,30 @@ Resources:
           import datetime
           import json
           
-          
           def lambda_handler(event, context):
-            #stop TransferServere
-            print(event)
-            print(os.environ)
-            import boto3
-          
-            client = boto3.client('transfer')
-            res=client.stop_server(
-              ServerId=os.environ["SERVER_ID"]
-            )
+            #networkaclをすべて拒否に変更
+            client=boto3.client("ec2")
+            acls=client.describe_network_acls(Filters=[{"Name":"association.subnet-id","Values":[os.environ["SUBNET_ID"]]}])
+            association_id=acls["NetworkAcls"][0]["Associations"][0]['NetworkAclAssociationId']
+            res=client.replace_network_acl_association(AssociationId=association_id,NetworkAclId=os.environ["NACL_ID"])
             print(res)
+            
+            
+            
+            
+            
+            
+            
+            #stop TransferServere
+            #print(event)
+            #print(os.environ)
+            #import boto3
+        #  
+            #client = boto3.client('transfer')
+            #res=client.stop_server(
+            #  ServerId=os.environ["SERVER_ID"]
+            #)
+            #print(res)
 
   LambdaInvokePermission:
     Type: 'AWS::Lambda::Permission'
