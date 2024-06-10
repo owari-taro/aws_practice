@@ -222,8 +222,25 @@ Resources:
             Principal: 
               Service: transfer.amazonaws.com
             Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSTransferLoggingAccess    
+      
+      Policies: 
+        - PolicyName: TransferLoggingPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+            - Effect: Allow
+              #not contain create log group
+              Action:
+                - "transfer:StopServer"
+                - "logs:CreateLogStream"
+                - "logs:DescribeLogStreams"
+                - "logs:CreateLogGroup"
+                - "logs:PutLogEvents"
+              Resource: 
+                !GetAtt TransferLogGroup.Arn
+
+      #ManagedPolicyArns:
+      #  - arn:aws:iam::aws:policy/service-role/AWSTransferLoggingAccess    
 
 ######################
 ##Lambda Function for stopping sftp server
