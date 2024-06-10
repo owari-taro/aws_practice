@@ -303,12 +303,6 @@ Resources:
             res=client.replace_network_acl_association(AssociationId=association_id,NetworkAclId=os.environ["NACL_ID"])
             print(res)
             
-            
-            
-            
-            
-            
-            
             #stop TransferServere
             #print(event)
             #print(os.environ)
