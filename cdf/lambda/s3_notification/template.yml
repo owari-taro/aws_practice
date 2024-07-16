@@ -1,0 +1,238 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Parameters:
+  NotificationBucket:
+    Default: "urotanke-test"
+    Type: String
+    Description: S3 bucket that's used for the Lambda event notification
+  Prefix:
+    Default: "user1"
+    Type: String
+    Description: Prefix of the object key name for filtering rules
+  Suffix:
+    Default: ""
+    Type: String
+    Description: Suffix of the object key name for filtering rules
+  EcrImageUri:
+    Description: ECR image URI
+    Type: String
+  SNSTopicName:
+    Default: "S3PutNotification"
+    Type: String
+  LambdaFuncName:
+    Default: "S3PutNotification"
+    Description: "lambda function"
+    Type: String
+Resources:
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Ref SNSTopicName
+  LambdaFunc:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref LambdaFuncName
+      Role:
+        Fn::GetAtt:
+          - LambdaRole
+          - Arn
+      PackageType: Image
+      Code:
+        ImageUri: !Ref "EcrImageUri"
+      Architectures:
+        - x86_64
+      MemorySize: 512
+      Timeout: 30
+      Environment:
+        Variables:
+          SnsTopicArn: !GetAtt SNSTopic.TopicArn
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: !Sub "${LambdaFuncName}AdditionalPolicy"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action: "sns:Publish"
+                Resource: !Ref SNSTopic
+
+  LambdaInvokePermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !GetAtt LambdaFunc.Arn
+      Action: 'lambda:InvokeFunction'
+      Principal: s3.amazonaws.com
+      SourceAccount: !Ref 'AWS::AccountId'
+      SourceArn: !Sub 'arn:aws:s3:::${NotificationBucket}'
+############
+################
+################
+  LambdaTrigger:
+    Type: 'Custom::LambdaTrigger'
+    DependsOn: LambdaInvokePermission
+    Properties:
+      ServiceToken: !GetAtt CustomResourceLambdaFunction.Arn
+      Id: !Sub
+        - S3LambdaNotif-${UniqueId}
+        - UniqueId: !Select [0, !Split ['-', !Select [2, !Split [/, !Ref 'AWS::StackId']]]]
+      Bucket: !Ref NotificationBucket
+      Prefix: !Ref Prefix
+      Suffix: !Ref Suffix
+      LambdaArn: !GetAtt LambdaFunc.Arn
+
+  LambdaIAMRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: root
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:GetBucketNotification'
+                  - 's3:PutBucketNotification'
+                Resource: !Sub 'arn:aws:s3:::${NotificationBucket}'
+              - Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutLogEvents'
+                Resource: 'arn:aws:logs:*:*:*'
+
+  CustomResourceLambdaFunction:
+    Type: 'AWS::Lambda::Function'
+    Properties:
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaIAMRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import cfnresponse
+
+          SUCCESS = "SUCCESS"
+          FAILED = "FAILED"
+
+          print('Loading function')
+          s3 = boto3.resource('s3')
+
+          def lambda_handler(event, context):
+              print("Received event: " + json.dumps(event, indent=2))
+              responseData={}
+              try:
+                  if event['RequestType'] == 'Delete':
+                      print("Request Type:",event['RequestType'])
+                      Id=event['ResourceProperties']['Id']
+                      Bucket=event['ResourceProperties']['Bucket']
+
+                      delete_notification(Id, Bucket)
+                      print("Sending response to custom resource after Delete")
+                  elif event['RequestType'] == 'Create' or event['RequestType'] == 'Update':
+                      print("Request Type:",event['RequestType'])
+                      Id=event['ResourceProperties']['Id']
+                      Prefix=event['ResourceProperties']['Prefix']
+                      Suffix=event['ResourceProperties']['Suffix']
+                      LambdaArn=event['ResourceProperties']['LambdaArn']
+                      Bucket=event['ResourceProperties']['Bucket']
+                      
+                      add_notification(Id, Prefix, Suffix, LambdaArn, Bucket)
+                      responseData={'Bucket':Bucket}
+                      print("Sending response to custom resource")
+                  responseStatus = 'SUCCESS'
+              except Exception as e:
+                  print('Failed to process:', e)
+                  responseStatus = 'FAILED'
+                  responseData = {'Failure': 'Something bad happened.'}
+              cfnresponse.send(event, context, responseStatus, responseData)
+
+          def add_notification(Id, Prefix, Suffix, LambdaArn, Bucket):
+              bucket_notification = s3.BucketNotification(Bucket)
+              print(bucket_notification.lambda_function_configurations)
+
+              lambda_function_configurations = bucket_notification.lambda_function_configurations
+
+              if lambda_function_configurations is None:
+                  lambda_function_configurations = []
+              else:
+                  lambda_function_configurations = [e for e in lambda_function_configurations if e['Id'] != Id]
+
+              lambda_config = {}
+              lambda_config['Id'] = Id
+              lambda_config['LambdaFunctionArn'] = LambdaArn
+              lambda_config['Events'] = ['s3:ObjectCreated:*']
+              lambda_config['Filter'] = {'Key': {'FilterRules': [
+                      {'Name': 'Prefix', 'Value': Prefix},
+                      {'Name': 'Suffix', 'Value': Suffix}
+                      ]}
+              }
+              
+              lambda_function_configurations.append(lambda_config)
+              print(lambda_function_configurations)
+              
+              put_bucket_notification(bucket_notification, lambda_function_configurations)
+              
+              print("Put request completed....")
+            
+          def delete_notification(Id, Bucket):
+
+              bucket_notification = s3.BucketNotification(Bucket)
+              print(bucket_notification.lambda_function_configurations)
+
+              lambda_function_configurations = bucket_notification.lambda_function_configurations
+
+              if lambda_function_configurations is not None:
+                  lambda_function_configurations = [e for e in lambda_function_configurations if e['Id'] != Id]
+
+              print(lambda_function_configurations)
+
+              put_bucket_notification(bucket_notification, lambda_function_configurations)
+
+              print("Delete request completed....")
+
+          def put_bucket_notification(BucketNotification, LambdaFunctionConfigurations):
+
+              notification_configuration = {}
+              if LambdaFunctionConfigurations is not None:
+                  notification_configuration['LambdaFunctionConfigurations'] = LambdaFunctionConfigurations
+              
+              if BucketNotification.queue_configurations is not None:
+                  notification_configuration['QueueConfigurations'] = BucketNotification.queue_configurations
+
+              if BucketNotification.topic_configurations is not None:
+                  notification_configuration['TopicConfigurations'] = BucketNotification.topic_configurations
+
+              print(notification_configuration)
+              
+              response = BucketNotification.put(
+                NotificationConfiguration= notification_configuration
+              )
+      Runtime: python3.12
+      Timeout: 50
+
+
+
+  
