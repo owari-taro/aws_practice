@@ -1,0 +1,114 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Template for creating vpc and subnet.
+#parametter
+Parameters:
+  ProjectName:
+    Type: String
+    Default: "Sample"
+  VpcCidr:
+    Type: String
+    Default: 10.13.0.0/16
+  PublicSubnetCidr:
+    Type: String
+    Default: 10.13.0.0/24
+  PrivateSubnetCidr:
+    Type: String
+    Default: 10.13.1.0/24
+
+Resources:
+  #######################################
+  #VPCの設定(VPC/Subnet/IGW/RouteTable/SGなど/)
+  #######################################
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      #10.12.0.0/16 #!If [IsProd,10.12.0.0/16,10.24.0.0/16]
+      InstanceTenancy: default
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub vpc-${ProjectName}
+          #!Ref VpcName:
+          #!Sub cfn-${Env}
+          ## secret managerの値をタグに追加する
+          #- Key: "Secret"
+          #  Value: '{{resolve:secretsmanager:arn:aws:secretsmanager:ap-northeast-1:{account-id}:secret:test_secret_keys-3WPOtW:SecretString:test_api_key}}'
+          
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref PublicSubnetCidr
+      #環境ごとに分ける場合
+      ##!If [IsProd,10.12.0.0/24,10.24.0.0/24]
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs ]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub public-sbn-${ProjectName}
+ 
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      CidrBlock: !Ref PrivateSubnetCidr
+      #環境ごとに分ける場合
+      ##!If [IsProd,10.12.0.0/24,10.24.0.0/24]
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs ]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub private-sbn-${ProjectName}
+    
+  #internet-gateway
+  IGW:
+    Type: AWS::EC2::InternetGateway
+    Properties: 
+      Tags:
+        - Key: Name
+          Value: !Sub igw-${ProjectName}
+
+  VPCIGWAttach:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: 
+      InternetGatewayId: !Ref IGW
+      VpcId: !Ref VPC
+      
+####################################
+##################################
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub pulic-srtb-${ProjectName}
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: IGW
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref IGW
+
+  PublicSubnet1Association:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref PublicRouteTable
+  SSHSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      VpcId: !Ref VPC
+      GroupDescription: "SSHSG"
+      GroupName: "SSHSG"
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          #allow anywhere 
+          CidrIp: 0.0.0.0/0
+
