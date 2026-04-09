@@ -1,0 +1,102 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Lambda-driven API that returns CloudFront signed cookies (PoC)
+
+Parameters:
+  FunctionName:
+    Type: String
+    Default: CloudFrontSignedCookieApi
+    Description: Lambda function name
+  HttpApiName:
+    Type: String
+    Default: CloudFrontSignedCookieHttpApi
+    Description: HTTP API name
+  CloudFrontDomain:
+    Type: String
+    Description: CloudFront distribution domain (without scheme)
+  CloudFrontKeyPairId:
+    Type: String
+    Description: CloudFront key pair ID (public key id)
+  CloudFrontPrivateKeyFilePath:
+    Type: String
+    Default: /var/task/private_key.pem
+    Description: Local private key PEM file path in Lambda runtime (test only)
+  DefaultResourcePath:
+    Type: String
+    Default: "/*"
+    Description: Default CloudFront resource path for cookie scope
+  DefaultCookieTtlSeconds:
+    Type: Number
+    Default: 300
+    Description: Default cookie TTL in seconds
+  CookieDomain:
+    Type: String
+    Default: ""
+    Description: Optional cookie Domain attribute. Empty means host-only cookie.
+  DebugErrorResponse:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: Return detailed exception info in API response (test only)
+
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 15
+    MemorySize: 256
+    Architectures:
+      - x86_64
+
+Resources:
+  SignedCookieHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Name: !Ref HttpApiName
+
+  SignedCookieFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+            
+  SignedCookieFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Ref FunctionName
+      CodeUri: src/
+      Handler: app.handler
+      Role: !GetAtt SignedCookieFunctionRole.Arn
+      Environment:
+        Variables:
+          CF_DOMAIN: !Ref CloudFrontDomain
+          CF_KEY_PAIR_ID: !Ref CloudFrontKeyPairId
+          CF_PRIVATE_KEY_FILE_PATH: !Ref CloudFrontPrivateKeyFilePath
+          DEFAULT_RESOURCE_PATH: !Ref DefaultResourcePath
+          DEFAULT_COOKIE_TTL_SECONDS: !Ref DefaultCookieTtlSeconds
+          COOKIE_DOMAIN: !Ref CookieDomain
+          DEBUG_ERROR_RESPONSE: !Ref DebugErrorResponse
+      Events:
+        GetSignedCookie:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SignedCookieHttpApi
+            Method: GET
+            Path: /signed-cookie
+            PayloadFormatVersion: "2.0"
+
+Outputs:
+  SignedCookieApiUrl:
+    Description: HTTP API endpoint URL for signed cookie generation
+    Value: !Sub "https://${SignedCookieHttpApi}.execute-api.${AWS::Region}.amazonaws.com/signed-cookie"
